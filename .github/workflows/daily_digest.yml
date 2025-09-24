@@ -35,7 +35,7 @@ jobs:
           pip install --no-deps html2text  # Tránh conflict
       
       - name: Run news digest
-        run: python news_digest.py
+        run: python clean_news_digest.py
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}

@@ -32,6 +32,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install --no-deps html2text  # Tránh conflict
       
       - name: Run news digest
         run: python news_digest.py

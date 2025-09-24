@@ -1,0 +1,5 @@
+feedparser
+newspaper3k
+requests
+beautifulsoup4
+lxml

@@ -2,33 +2,42 @@ name: Daily Digest
 
 on:
   schedule:
-    - cron: "40 16 * * *"   # 16:40 UTC = 23:40 VN
+    - cron: "0 1 * * *"   # 01:00 UTC = 08:00 VN
   workflow_dispatch: {}
 
 jobs:
-  build:
+  run:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: "3.10"
-
-      - name: Install dependencies
+      - name: Check requirements.txt
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Download NLTK data
-        run: python -m nltk.downloader punkt
-
-      - name: Run digest
+          if [ ! -f requirements.txt ]; then
+            echo "Error: requirements.txt not found"
+            exit 1
+          fi
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run news digest
         run: python news_digest.py
         env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'Daily Digest workflow failed. Please check the logs.'
+            })

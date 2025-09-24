@@ -1,26 +1,34 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Daily News Digest System
+Collects news from RSS feeds and sends email summary
+"""
+
 import os
+import sys
 import feedparser
 import requests
 from datetime import datetime
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from bs4 import BeautifulSoup
+import re
+import time
 
-try:
-    from newspaper import Article
-    NEWSPAPER_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ Không thể import newspaper: {e}")
-    NEWSPAPER_AVAILABLE = False
+print("🚀 Khởi động Daily News Digest System...")
+print(f"🐍 Python version: {sys.version}")
+print(f"⏰ Thời gian: {datetime.now()}")
 
-# Danh sách RSS cần theo dõi
+# Danh sách RSS feeds theo chủ đề
 RSS_FEEDS = {
     "PCCC": [
         "https://baochinhphu.vn/rss/thoi-su.rss",
         "https://cand.com.vn/rss"
     ],
     "LNG": [
-        "https://vnexpress.net/rss/kinh-doanh.rss",
+        "https://vnexpress.net/rss/kinh-doanh.rss", 
         "https://nangluongquocte.petrotimes.vn/rss"
     ],
     "MRT": [
@@ -29,189 +37,433 @@ RSS_FEEDS = {
     ]
 }
 
-# Hàm lấy nội dung bài báo
-def fetch_article_content(url):
-    if not NEWSPAPER_AVAILABLE:
+# User agent để tránh bị block
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+}
+
+def clean_text(text):
+    """Làm sạch text từ HTML"""
+    if not text:
         return ""
     
+    # Loại bỏ HTML tags
+    soup = BeautifulSoup(text, 'html.parser')
+    text = soup.get_text()
+    
+    # Làm sạch whitespace
+    text = re.sub(r'\s+', ' ', text.strip())
+    
+    # Loại bỏ ký tự đặc biệt không cần thiết
+    text = re.sub(r'[^\w\s.,!?;:()\-""''…]', '', text)
+    
+    return text
+
+def extract_content_from_html(html_content, url):
+    """Trích xuất nội dung chính từ HTML"""
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text[:4000]  # Giới hạn độ dài
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Loại bỏ các phần không cần thiết
+        for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'menu']):
+            tag.decompose()
+        
+        # Tìm content chính theo các pattern phổ biến
+        selectors = [
+            'article',
+            '[class*="content"]', 
+            '[class*="article"]',
+            '[class*="post"]',
+            '[class*="story"]',
+            '[id*="content"]',
+            '[id*="article"]',
+            '.main-content',
+            '.entry-content',
+            '.post-content'
+        ]
+        
+        content_text = ""
+        for selector in selectors:
+            elements = soup.select(selector)
+            if elements:
+                content_text = " ".join([elem.get_text() for elem in elements])
+                break
+        
+        # Nếu không tìm được selector cụ thể, lấy toàn bộ body
+        if not content_text:
+            body = soup.find('body')
+            if body:
+                content_text = body.get_text()
+            else:
+                content_text = soup.get_text()
+        
+        # Làm sạch và cắt ngắn
+        content_text = clean_text(content_text)
+        
+        return content_text[:3000] if content_text else ""
+        
     except Exception as e:
-        print(f"⚠️ Lỗi khi lấy nội dung từ {url}: {e}")
+        print(f"    ⚠️ Lỗi parse HTML: {e}")
         return ""
 
-# Hàm lấy mô tả từ RSS feed
-def get_description_from_feed(entry):
-    """Lấy mô tả từ RSS entry nếu không thể lấy full content"""
-    description = ""
-    if hasattr(entry, 'description'):
-        description = entry.description
-    elif hasattr(entry, 'summary'):
-        description = entry.summary
-    return description[:1000] if description else ""
+def fetch_article_content(url, max_retries=2):
+    """Lấy nội dung bài báo từ URL"""
+    for attempt in range(max_retries):
+        try:
+            print(f"    🌐 Fetching: {url[:80]}...")
+            
+            response = requests.get(
+                url, 
+                headers=HEADERS, 
+                timeout=15,
+                allow_redirects=True
+            )
+            response.raise_for_status()
+            
+            # Auto-detect encoding
+            if response.encoding == 'ISO-8859-1':
+                response.encoding = response.apparent_encoding or 'utf-8'
+            
+            content = extract_content_from_html(response.text, url)
+            
+            if len(content) > 100:  # Có nội dung hợp lệ
+                print(f"    ✅ Lấy được {len(content)} ký tự")
+                return content
+            else:
+                print(f"    ⚠️ Nội dung quá ngắn ({len(content)} ký tự)")
+                return ""
+                
+        except requests.exceptions.Timeout:
+            print(f"    ⚠️ Timeout attempt {attempt+1}/{max_retries}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            continue
+            
+        except requests.exceptions.RequestException as e:
+            print(f"    ⚠️ Request error: {str(e)[:100]}")
+            return ""
+            
+        except Exception as e:
+            print(f"    ⚠️ Unexpected error: {str(e)[:100]}")
+            return ""
+    
+    return ""
 
-# Hàm tóm tắt bằng DeepSeek
-def summarize_with_deepseek(text):
+def get_rss_description(entry):
+    """Lấy mô tả từ RSS entry"""
+    description = ""
+    
+    # Thử các trường khác nhau
+    for field in ['description', 'summary', 'content']:
+        if hasattr(entry, field):
+            content = getattr(entry, field)
+            
+            if isinstance(content, list) and content:
+                # Trường hợp content là list (như feedparser)
+                description = content[0].get('value', '') if isinstance(content[0], dict) else str(content[0])
+            elif isinstance(content, str):
+                description = content
+            
+            if description:
+                break
+    
+    if description:
+        description = clean_text(description)
+        return description[:1500]
+    
+    return ""
+
+def summarize_with_deepseek(content, title=""):
+    """Tóm tắt nội dung bằng DeepSeek API"""
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         return "⚠️ Thiếu DEEPSEEK_API_KEY"
     
-    if not text.strip():
-        return "⚠️ Không có nội dung để tóm tắt"
+    if not content or len(content.strip()) < 50:
+        return "⚠️ Nội dung quá ngắn để tóm tắt"
 
     try:
-        resp = requests.post(
+        # Tạo prompt context
+        prompt_text = f"Tiêu đề: {title}\n\nNội dung: {content[:2000]}"  # Giới hạn để tránh token limit
+        
+        response = requests.post(
             "https://api.deepseek.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
             json={
                 "model": "deepseek-chat",
                 "messages": [
-                    {"role": "system", "content": "Bạn là chuyên gia PCCC, năng lượng, hạ tầng giao thông. Hãy tóm tắt ngắn gọn tin tức cho bản tin nội bộ bằng tiếng Việt."},
-                    {"role": "user", "content": f"Tóm tắt tin tức này:\n{text}"}
+                    {
+                        "role": "system", 
+                        "content": "Bạn là chuyên gia phân tích tin tức Việt Nam về PCCC (phòng cháy chữa cháy), năng lượng LNG, và giao thông MRT. Tóm tắt tin tức ngắn gọn, chính xác bằng tiếng Việt."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"Hãy tóm tắt tin tức này trong 2-3 câu, tập trung vào thông tin quan trọng:\n\n{prompt_text}"
+                    }
                 ],
                 "temperature": 0.3,
-                "max_tokens": 200
+                "max_tokens": 200,
+                "top_p": 0.9
             },
             timeout=30
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        
+        response.raise_for_status()
+        result = response.json()
+        
+        if 'choices' in result and result['choices'] and 'message' in result['choices'][0]:
+            summary = result['choices'][0]['message']['content'].strip()
+            return summary if summary else "⚠️ AI không trả về kết quả"
+        else:
+            return "⚠️ Phản hồi API không hợp lệ"
+            
     except requests.exceptions.Timeout:
         return "⚠️ Timeout khi gọi DeepSeek API"
     except requests.exceptions.RequestException as e:
-        return f"⚠️ Lỗi khi gọi DeepSeek: {e}"
+        return f"⚠️ Lỗi API: {str(e)[:80]}"
     except Exception as e:
-        return f"⚠️ Lỗi không xác định: {e}"
+        return f"⚠️ Lỗi: {str(e)[:80]}"
 
-# Hàm quét tin & tóm tắt
-def collect_news():
-    summaries = {}
-    total_processed = 0
+def process_rss_feed(feed_url, topic, max_articles=3):
+    """Xử lý một RSS feed"""
+    articles = []
     
-    for topic, feeds in RSS_FEEDS.items():
-        summaries[topic] = []
-        print(f"📰 Đang xử lý chủ đề: {topic}")
+    try:
+        print(f"  📡 Đang xử lý: {feed_url}")
         
-        for feed_url in feeds:
-            try:
-                print(f"  🔍 Đang quét: {feed_url}")
-                feed = feedparser.parse(feed_url)
-                
-                if not feed.entries:
-                    print(f"  ⚠️ Không có tin tức từ {feed_url}")
-                    continue
-                
-                for entry in feed.entries[:3]:  # lấy 3 tin đầu
-                    # Thử lấy full content trước
-                    content = fetch_article_content(entry.link)
-                    
-                    # Nếu không lấy được full content, dùng description từ RSS
-                    if not content:
-                        content = get_description_from_feed(entry)
-                    
-                    if not content:
-                        print(f"  ⚠️ Không thể lấy nội dung: {entry.title}")
-                        continue
-                    
-                    summary = summarize_with_deepseek(content)
-                    summaries[topic].append({
-                        "title": entry.title,
-                        "link": entry.link,
-                        "summary": summary
-                    })
-                    total_processed += 1
-                    print(f"  ✅ Đã xử lý: {entry.title[:50]}...")
-                    
-            except Exception as e:
-                print(f"  ❌ Lỗi khi xử lý feed {feed_url}: {e}")
+        # Parse RSS
+        feed = feedparser.parse(feed_url)
+        
+        if not feed.entries:
+            print(f"  ❌ Không có bài viết nào")
+            return articles
+        
+        print(f"  📰 Tìm thấy {len(feed.entries)} bài viết, xử lý {min(max_articles, len(feed.entries))} bài")
+        
+        for i, entry in enumerate(feed.entries[:max_articles]):
+            print(f"\n    📄 [{i+1}/{max_articles}] {entry.title[:60]}...")
+            
+            # Lấy nội dung full từ link
+            full_content = ""
+            if hasattr(entry, 'link') and entry.link:
+                full_content = fetch_article_content(entry.link)
+            
+            # Nếu không lấy được full content, dùng description từ RSS
+            if not full_content:
+                full_content = get_rss_description(entry)
+                print(f"    📝 Sử dụng RSS description: {len(full_content)} ký tự")
+            
+            if not full_content:
+                print(f"    ❌ Không có nội dung")
                 continue
+            
+            # Tóm tắt bằng AI
+            print(f"    🤖 Đang tóm tắt...")
+            summary = summarize_with_deepseek(full_content, entry.title)
+            
+            # Lưu thông tin bài viết
+            article_info = {
+                "title": getattr(entry, 'title', 'Không có tiêu đề'),
+                "link": getattr(entry, 'link', ''),
+                "summary": summary,
+                "published": getattr(entry, 'published', ''),
+                "content_length": len(full_content)
+            }
+            
+            articles.append(article_info)
+            print(f"    ✅ Hoàn thành bài {i+1}")
+            
+            # Delay để tránh overload
+            time.sleep(1)
+        
+    except Exception as e:
+        print(f"  ❌ Lỗi xử lý feed: {e}")
     
-    print(f"📊 Tổng số tin đã xử lý: {total_processed}")
-    return summaries
+    return articles
 
-# Hàm gửi email
-def send_email(summaries):
-    # Kiểm tra biến môi trường
-    required_vars = ["SMTP_USER", "SMTP_PASS", "EMAIL_TO"]
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
+def collect_all_news():
+    """Thu thập tin tức từ tất cả RSS feeds"""
+    all_news = {}
+    total_articles = 0
     
-    if missing_vars:
-        print(f"❌ Thiếu biến môi trường: {', '.join(missing_vars)}")
-        return False
-
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
-    email_to = os.getenv("EMAIL_TO")
-
-    # Tạo email
-    today = datetime.now().strftime("%Y-%m-%d")
-    subject = f"[BẢN TIN] PCCC · LNG · MRT — {today}"
+    print(f"\n🔄 Bắt đầu thu thập tin tức từ {len(RSS_FEEDS)} chủ đề...")
     
-    # Đếm tổng số tin
-    total_articles = sum(len(items) for items in summaries.values())
+    for topic, feed_urls in RSS_FEEDS.items():
+        print(f"\n📚 CHUYÊN MỤC: {topic}")
+        print("=" * 40)
+        
+        all_news[topic] = []
+        
+        for feed_url in feed_urls:
+            articles = process_rss_feed(feed_url, topic, max_articles=3)
+            all_news[topic].extend(articles)
+            total_articles += len(articles)
+            
+            # Nghỉ giữa các feed
+            time.sleep(2)
+        
+        print(f"  📊 Tổng {topic}: {len(all_news[topic])} bài")
     
-    body = f"📰 Bản tin tự động ngày {today}\n"
-    body += f"📊 Tổng số: {total_articles} tin tức\n"
-    body += "=" * 50 + "\n\n"
+    print(f"\n📈 TỔNG KẾT: {total_articles} bài viết từ {len(RSS_FEEDS)} chuyên mục")
+    return all_news
 
-    for topic, items in summaries.items():
-        if not items:
+def generate_email_content(news_data):
+    """Tạo nội dung email"""
+    today = datetime.now()
+    date_str = today.strftime("%Y-%m-%d")
+    time_str = today.strftime("%H:%M:%S")
+    
+    total_count = sum(len(articles) for articles in news_data.values())
+    
+    # Subject
+    subject = f"[BẢN TIN] PCCC·LNG·MRT — {date_str} ({total_count} tin)"
+    
+    # Body header
+    body = f"""📰 BẢN TIN TỰ ĐỘNG HÀNG NGÀY
+📅 Ngày: {date_str}
+⏰ Tạo lúc: {time_str}
+📊 Tổng số: {total_count} tin tức
+{'='*60}
+
+"""
+    
+    # Content cho từng chuyên mục
+    for topic, articles in news_data.items():
+        if not articles:
             continue
             
-        body += f"\n🏷️ === {topic} === ({len(items)} tin)\n\n"
-        for i, item in enumerate(items, 1):
-            body += f"{i}. {item['title']}\n"
-            body += f"🔗 {item['link']}\n"
-            body += f"📝 Tóm tắt: {item['summary']}\n"
-            body += "-" * 30 + "\n\n"
+        body += f"\n🏷️  {topic} ({len(articles)} tin)\n"
+        body += "─" * 50 + "\n\n"
+        
+        for i, article in enumerate(articles, 1):
+            body += f"{i}. {article['title']}\n"
+            
+            if article['link']:
+                body += f"🔗 {article['link']}\n"
+            
+            if article['published']:
+                body += f"📅 {article['published']}\n"
+            
+            body += f"📝 Tóm tắt: {article['summary']}\n"
+            body += f"📏 Độ dài: {article['content_length']} ký tự\n"
+            body += "\n" + "·" * 40 + "\n\n"
+    
+    # Footer
+    body += f"""
+{'='*60}
+🤖 Hệ thống Daily Digest tự động
+🔄 Lần chạy tiếp theo: Ngày mai 08:00
+⚙️ Phiên bản: 2.0 (No newspaper3k)
+"""
+    
+    return subject, body
 
-    body += f"\n🤖 Được tạo tự động bởi Daily Digest\n"
-    body += f"⏰ Thời gian: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-
-    msg = MIMEMultipart()
-    msg["From"] = smtp_user
-    msg["To"] = email_to
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
+def send_daily_email(news_data):
+    """Gửi email báo cáo hàng ngày"""
+    
+    # Kiểm tra cấu hình SMTP
+    smtp_config = {
+        'host': os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        'port': int(os.getenv("SMTP_PORT", "587")),
+        'user': os.getenv("SMTP_USER"),
+        'pass': os.getenv("SMTP_PASS"),
+        'to': os.getenv("EMAIL_TO")
+    }
+    
+    missing_config = [k for k, v in smtp_config.items() if k != 'host' and k != 'port' and not v]
+    if missing_config:
+        print(f"❌ Thiếu cấu hình email: {missing_config}")
+        return False
+    
     try:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
+        # Tạo nội dung email
+        subject, body = generate_email_content(news_data)
+        
+        # Tạo message
+        msg = MIMEMultipart()
+        msg['From'] = smtp_config['user']
+        msg['To'] = smtp_config['to']
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        
+        # Gửi email
+        print("📧 Đang kết nối SMTP server...")
+        with smtplib.SMTP(smtp_config['host'], smtp_config['port']) as server:
             server.starttls()
-            server.login(smtp_user, smtp_pass)
+            server.login(smtp_config['user'], smtp_config['pass'])
             server.send_message(msg)
-        print("✅ Đã gửi email thành công!")
+        
+        print("✅ Email đã được gửi thành công!")
+        print(f"📬 Gửi tới: {smtp_config['to']}")
+        print(f"📋 Tiêu đề: {subject}")
         return True
+        
+    except smtplib.SMTPAuthenticationError:
+        print("❌ Lỗi xác thực SMTP - kiểm tra username/password")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"❌ Lỗi SMTP: {e}")
+        return False
     except Exception as e:
         print(f"❌ Lỗi gửi email: {e}")
         return False
 
-if __name__ == "__main__":
-    print("🚀 Bắt đầu thu thập tin tức...")
-    
-    # Kiểm tra các dependency quan trọng
-    if not NEWSPAPER_AVAILABLE:
-        print("⚠️ Newspaper3k không khả dụng, chỉ sử dụng RSS descriptions")
+def main():
+    """Hàm chính của chương trình"""
+    print("🚀 DAILY NEWS DIGEST SYSTEM v2.0")
+    print(f"⏰ Khởi động: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("🔧 Không sử dụng newspaper3k")
+    print("="*60)
     
     try:
-        news = collect_news()
+        # Bước 1: Thu thập tin tức
+        print("\n📡 BƯỚC 1: THU THẬP TIN TỨC")
+        news_data = collect_all_news()
         
-        # Kiểm tra xem có tin tức nào không
-        total_news = sum(len(items) for items in news.values())
+        # Bước 2: Kiểm tra kết quả
+        total_news = sum(len(articles) for articles in news_data.values())
+        
         if total_news == 0:
-            print("⚠️ Không thu thập được tin tức nào!")
+            print("\n⚠️ CẢNH BÁO: Không thu thập được tin tức nào!")
+            print("Có thể nguyên nhân:")
+            print("- RSS feeds không khả dụng")
+            print("- Kết nối mạng kém")  
+            print("- Website chặn requests")
+            print("- Lỗi API DeepSeek")
+            return False
+        
+        print(f"\n✅ Thu thập thành công {total_news} tin tức!")
+        
+        # Bước 3: Gửi email
+        print("\n📧 BƯỚC 2: GỬI EMAIL")
+        success = send_daily_email(news_data)
+        
+        if success:
+            print("\n🎉 HOÀN THÀNH THÀNH CÔNG!")
+            print(f"📊 Đã xử lý: {total_news} tin tức")
+            print(f"⏰ Thời gian thực hiện: {datetime.now()}")
+            return True
         else:
-            print(f"📧 Đang gửi email với {total_news} tin tức...")
-            success = send_email(news)
-            if success:
-                print("🎉 Hoàn thành!")
-            else:
-                print("❌ Thất bại khi gửi email!")
-                
+            print("\n💥 THẤT BẠI KHI GỬI EMAIL!")
+            return False
+            
+    except KeyboardInterrupt:
+        print("\n⏹️ Chương trình bị dừng bởi người dùng")
+        return False
     except Exception as e:
-        print(f"💥 Lỗi chính: {e}")
-        raise
+        print(f"\n💥 LỖI NGHIÊM TRỌNG: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)

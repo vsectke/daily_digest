@@ -3,3 +3,5 @@ newspaper3k
 requests
 beautifulsoup4
 lxml
+lxml_html_clean
+nltk

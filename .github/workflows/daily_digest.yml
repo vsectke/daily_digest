@@ -2,7 +2,7 @@ name: Daily Digest
 
 on:
   schedule:
-    - cron: "0 1 * * *"   # 01:00 UTC = 08:00 giờ VN
+    - cron: "25 16 * * *"   # 16:25 UTC = 23:25 VN
   workflow_dispatch: {}
 
 jobs:
